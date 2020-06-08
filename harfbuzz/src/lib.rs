@@ -30,4 +30,7 @@ mod language;
 pub use self::language::Language;
 
 mod blob;
-pub use self::blob::Blob;
+pub use self::blob::{Blob, Borrowed, BorrowedMut, Owned};
+
+mod face;
+pub use self::face::Face;
