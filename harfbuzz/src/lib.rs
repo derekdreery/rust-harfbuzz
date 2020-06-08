@@ -20,6 +20,9 @@
 
 pub extern crate harfbuzz_sys as sys;
 
+mod scripts;
+pub use self::scripts::Script;
+
 mod buffer;
 pub use self::buffer::Buffer;
 
@@ -30,7 +33,10 @@ mod language;
 pub use self::language::Language;
 
 mod blob;
-pub use self::blob::{Blob, Borrowed, BorrowedMut, Owned};
+pub use self::blob::{Blob, Borrowed, Owned, Ownership};
 
 mod face;
 pub use self::face::Face;
+
+mod font;
+pub use self::font::Font;

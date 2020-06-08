@@ -20,19 +20,27 @@ use std::{mem, ops, ptr, slice};
 //  - We don't implement `hb_blob_create_from_file` since `std` and the `mmap` crate handle file
 //    loading better.
 
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A sealed marker trait to denote ownership semantics.
+pub trait Ownership: sealed::Sealed {}
+
+impl sealed::Sealed for Owned {}
+impl Ownership for Owned {}
+impl<'a> sealed::Sealed for Borrowed<'a> {}
+impl<'a> Ownership for Borrowed<'a> {}
+
 /// A marker struct to denote that data in a `Blob` is borrowed with some lifetime.
-#[derive(Clone)]
 pub struct Borrowed<'a> {
     phantom: PhantomData<&'a [u8]>,
 }
 
-/// A marker struct to denote that data in a `Blob` is mutably borrowed with some lifetime.
-pub struct BorrowedMut<'a> {
-    phantom: PhantomData<&'a mut [u8]>,
-}
-
 /// A marker struct to denote that data in a `Blob` is owned by the blob.
-#[derive(Clone)]
+///
+/// HarfBuzz will have been given the info needed to destroy the rust object owning the data when
+/// the `Blob` is dropped.
 pub struct Owned;
 
 /// Blobs wrap a chunk of binary data to handle lifecycle management of data
@@ -139,31 +147,13 @@ impl<'a> Blob<Borrowed<'a>> {
     }
 }
 
-impl<'a> Blob<BorrowedMut<'a>> {
-    /// Creates a blob by mutably borrowing from rust data.
-    ///
-    /// Note that even though we only hold a single reference to the data, HarfBuzz might
-    /// internally reference the data multiple times, meaning that mutations will fail.
+impl<T: Ownership> Blob<T> {
+    /// Construct a `Blob` from a raw pointer. Takes ownership of the blob.
     ///
     /// # Safety
     ///
-    /// The reference must not be used elsewhere while the `Blob` is live.
-    // TODO this might be safe, but needs some thought.
-    pub unsafe fn from_mut(mut data: impl AsMut<[u8]> + 'a) -> Self {
-        let data = data.as_mut();
-        assert!(data.len() <= c_uint::max_value() as usize);
-        Blob::from_raw(sys::hb_blob_create(
-            data.as_ptr() as *const c_char,
-            data.len() as c_uint,
-            sys::HB_MEMORY_MODE_WRITABLE,
-            ptr::null_mut(), // user data
-            None,            // destroy callback
-        ))
-    }
-}
-
-impl<T> Blob<T> {
-    /// Construct a `Blob` from a raw pointer. Takes ownership of the blob.
+    /// It is the user's responsibility to select the correct ownership semantics and lifetime of
+    /// `Self`, and to ensure that `raw` is a valid `hb_blob_t`.
     pub unsafe fn from_raw(raw: *mut sys::hb_blob_t) -> Self {
         Blob {
             raw,
@@ -230,7 +220,7 @@ impl<T> Drop for Blob<T> {
     }
 }
 
-impl<T: Clone> Clone for Blob<T> {
+impl<T: Ownership> Clone for Blob<T> {
     fn clone(&self) -> Self {
         unsafe {
             self.make_immutable();
@@ -257,7 +247,7 @@ impl<'a> From<&'a [u8]> for Blob<Borrowed<'a>> {
     }
 }
 
-impl<T> ops::Deref for Blob<T> {
+impl<T: Ownership> ops::Deref for Blob<T> {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
@@ -272,17 +262,6 @@ impl<T> ops::Deref for Blob<T> {
 
 const DEREF_MUT_ERR: &str =
     "hb_blob_get_data_writable failed, possibly because the data is immutable";
-
-impl<'a> ops::DerefMut for Blob<BorrowedMut<'a>> {
-    fn deref_mut(&mut self) -> &mut [u8] {
-        unsafe {
-            let mut len = 0;
-            let ptr = sys::hb_blob_get_data_writable(self.raw, &mut len);
-            assert!(!ptr.is_null(), DEREF_MUT_ERR);
-            slice::from_raw_parts_mut(ptr as *mut u8, len as usize)
-        }
-    }
-}
 
 impl<'a> ops::DerefMut for Blob<Owned> {
     fn deref_mut(&mut self) -> &mut [u8] {

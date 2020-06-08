@@ -1,10 +1,14 @@
 use crate::{
-    blob::{Blob, Borrowed, Owned},
+    blob::{Blob, Borrowed, Owned, Ownership},
+    font::Font,
     sys,
 };
 use std::{marker::PhantomData, sync::Arc};
 
 /// Wrapper around `hb_face_t`.
+///
+/// In HarfBuzz, faces are heavyweight objects because they include all the raw font data in
+/// whatever format is in use.
 pub struct Face<T> {
     raw: *mut sys::hb_face_t,
     phantom: PhantomData<T>,
@@ -17,7 +21,7 @@ impl Face<Owned> {
     }
 }
 
-impl<T> Face<T> {
+impl<T: Ownership> Face<T> {
     /// Create a `Face` from a raw pointer.
     ///
     /// # Safety
@@ -71,11 +75,18 @@ impl<T> Face<T> {
         // this won't compile if c_uint != u32.
         unsafe { sys::hb_face_get_glyph_count(self.as_raw()) }
     }
+
+    /// Create a `Font` object by parsing the contents of this `Face`. `Font`s are much more
+    /// lightweight than `Face`s but can still be cached if necessary.
+    pub fn font(&self) -> Font<T> {
+        Font::new(self)
+    }
 }
 
-impl<T: Clone> Clone for Face<T> {
+impl<T: Ownership> Clone for Face<T> {
     fn clone(&self) -> Self {
         unsafe {
+            sys::hb_face_make_immutable(self.raw);
             sys::hb_face_reference(self.raw);
             Face::from_raw(self.raw)
         }
