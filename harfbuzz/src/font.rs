@@ -1,9 +1,13 @@
+//! The `Font` type and associated types/functions.
+//!
+//! A `Font` is a font face along with any variation settings. It is used in shaping.
+
 use crate::{
-    blob::{Blob, Borrowed, Owned, Ownership},
-    face::Face,
-    sys,
+    compose_tag, decompose_tag,
+    face::{Face, ITALIC_TAG, OPTICAL_SIZE_TAG, SLANT_TAG, WEIGHT_TAG, WIDTH_TAG},
+    sys, Borrowed, Ownership,
 };
-use std::marker::PhantomData;
+use std::{convert::TryInto, fmt, marker::PhantomData};
 
 /// Wrapper around `hb_font_t`.
 ///
@@ -112,6 +116,36 @@ impl<T: Ownership> Font<T> {
         self.set_scale(x_scale, y_scale);
         self
     }
+
+    /// Sets variations for this font.
+    ///
+    /// Previous variations with the same tag name will be overwritten.
+    #[inline]
+    pub fn set_variations(&self, variations: &[Variation]) {
+        unsafe {
+            sys::hb_font_set_variations(
+                self.raw,
+                variations.as_ptr() as *mut sys::hb_variation_t,
+                variations.len().try_into().unwrap(),
+            )
+        }
+    }
+
+    /// Sets variations for this font.
+    ///
+    /// Previous variations with the same tag name will be overwritten.
+    #[inline]
+    pub fn with_variations(self, variations: &[Variation]) -> Self {
+        self.set_variations(variations);
+        self
+    }
+
+    /// Create another font with exactly the same fontface and variations as `Self`.
+    ///
+    /// The two fonts can then be changed (e.g. by setting variations) without affecting each other.
+    pub fn create_subfont(&self) -> Self {
+        unsafe { Self::from_raw(sys::hb_font_create_sub_font(self.raw)) }
+    }
 }
 
 impl<T: Ownership> Clone for Font<T> {
@@ -138,5 +172,79 @@ impl<'a, T: Ownership> From<&'a Face<T>> for Font<T> {
     #[inline]
     fn from(face: &'a Face<T>) -> Font<T> {
         Font::new(face)
+    }
+}
+
+/// A variation - these can be applied to a font.
+#[repr(transparent)]
+pub struct Variation {
+    raw: sys::hb_variation_t,
+}
+
+impl fmt::Debug for Variation {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Variation")
+            .field("tag", &self.tag())
+            .field("value", &self.value())
+            .finish()
+    }
+}
+
+impl Variation {
+    /// Create a new variation from its constituent parts.
+    #[inline]
+    pub fn new(tag: [u8; 4], value: f32) -> Self {
+        Self {
+            raw: sys::hb_variation_t {
+                tag: compose_tag(tag),
+                value,
+            },
+        }
+    }
+
+    /// Create a standard weight variation with the given value.
+    ///
+    /// A value of 400 is usually 'normal'.
+    #[inline]
+    pub fn weight(value: f32) -> Self {
+        Self::new(*WEIGHT_TAG, value)
+    }
+
+    /// Create a standard italic variation with the given value.
+    #[inline]
+    pub fn italic(value: f32) -> Self {
+        Self::new(*ITALIC_TAG, value)
+    }
+
+    /// Create a standard size variation with the given value.
+    #[inline]
+    pub fn size(value: f32) -> Self {
+        Self::new(*OPTICAL_SIZE_TAG, value)
+    }
+
+    /// Create a standard slant variation with the given value.
+    #[inline]
+    pub fn slant(value: f32) -> Self {
+        Self::new(*SLANT_TAG, value)
+    }
+
+    /// Create a standard slant variation with the given value.
+    ///
+    /// A value of 100 is usually 'normal'.
+    #[inline]
+    pub fn width(value: f32) -> Self {
+        Self::new(*WIDTH_TAG, value)
+    }
+
+    /// Get the name of the variation axis this variation corresponds to.
+    #[inline]
+    pub fn tag(&self) -> [u8; 4] {
+        decompose_tag(self.raw.tag)
+    }
+
+    /// Get the value to set the variation axis to.
+    #[inline]
+    pub fn value(&self) -> f32 {
+        self.raw.value
     }
 }

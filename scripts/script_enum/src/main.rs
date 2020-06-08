@@ -13,6 +13,7 @@ fn main() {
 use crate::sys;
 
 /// All scripts supported by HarfBuzz
+#[derive(Debug, Copy, Clone, PartialEq, Hash)]
 pub enum Script {{"
     );
 
@@ -21,7 +22,9 @@ pub enum Script {{"
         println!("{},", script.rust_name());
     }
     println!(
-        "}}
+            "/// Getting the script failed or the script is invalid.
+    Invalid,
+}}
 
 
 impl Script {{
@@ -39,7 +42,8 @@ impl Script {{
     }
 
     println!(
-        "       _ => panic!(\"unrecognised script\"),
+        "        0 => Script::Invalid,
+        _ => panic!(\"unrecognised script\"),
         }}
     }}
 
@@ -56,7 +60,8 @@ impl Script {{
         );
     }
     println!(
-        "}}
+        "       Script::Invalid => 0
+        }}
     }}
 }}"
     );

@@ -7,10 +7,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std;
+//! This module wraps the `hb_buffer_t` type and provides ancilliary types and functions.
+
+use std::{
+    convert::TryInto,
+    os::raw::{c_char, c_int},
+    ptr,
+};
 use sys;
 
-use {Direction, Language};
+use crate::{Direction, Language, Script};
 
 /// A series of Unicode characters.
 ///
@@ -57,11 +63,11 @@ use {Direction, Language};
 /// properties using the [`guess_segment_properties`] method on `Buffer`:
 ///
 /// ```
-/// # use harfbuzz::{Buffer, Direction, sys};
+/// # use harfbuzz::{Buffer, Direction, sys, Script};
 /// let mut b = Buffer::with("مساء الخير");
 /// b.guess_segment_properties();
 /// assert_eq!(b.get_direction(), Direction::RTL);
-/// assert_eq!(b.get_script(), sys::HB_SCRIPT_ARABIC);
+/// assert_eq!(b.get_script(), Script::Arabic);
 /// ```
 ///
 /// [`set_direction`]: #method.set_direction
@@ -125,10 +131,10 @@ impl Buffer {
         unsafe {
             sys::hb_buffer_add_utf8(
                 self.raw,
-                text.as_ptr() as *const std::os::raw::c_char,
-                text.len() as std::os::raw::c_int,
+                text.as_ptr() as *const c_char,
+                text.len() as c_int,
                 0,
-                text.len() as std::os::raw::c_int,
+                text.len() as c_int,
             )
         };
     }
@@ -205,11 +211,11 @@ impl Buffer {
     /// taking buffer script into consideration when choosing a language.
     ///
     /// ```
-    /// # use harfbuzz::{Buffer, Direction, sys};
+    /// # use harfbuzz::{Buffer, Direction, sys, Script};
     /// let mut b = Buffer::with("Hello, world!");
     /// b.guess_segment_properties();
     /// assert_eq!(b.get_direction(), Direction::LTR);
-    /// assert_eq!(b.get_script(), sys::HB_SCRIPT_LATIN);
+    /// assert_eq!(b.get_script(), Script::Latin);
     /// ```
     ///
     /// See also:
@@ -261,8 +267,8 @@ impl Buffer {
     ///
     /// * [`get_script`](#method.get_script)
     /// * [`guess_segment_properties`](#method.guess_segment_properties)
-    pub fn set_script(&mut self, script: sys::hb_script_t) {
-        unsafe { sys::hb_buffer_set_script(self.raw, script) };
+    pub fn set_script(&mut self, script: Script) {
+        unsafe { sys::hb_buffer_set_script(self.raw, script.as_raw()) };
     }
 
     /// Get the script for the buffer.
@@ -270,8 +276,8 @@ impl Buffer {
     /// See also:
     ///
     /// * [`set_script`](#method.set_script)
-    pub fn get_script(&self) -> sys::hb_script_t {
-        unsafe { sys::hb_buffer_get_script(self.raw) }
+    pub fn get_script(&self) -> Script {
+        unsafe { Script::from_raw(sys::hb_buffer_get_script(self.raw)) }
     }
 
     /// Sets the language of buffer to *language*.
@@ -298,6 +304,55 @@ impl Buffer {
     pub fn get_language(&self) -> Language {
         unsafe { Language::from_raw(sys::hb_buffer_get_language(self.raw)) }
     }
+
+    /// Gets the current content type of the buffer.
+    pub fn content_type(&self) -> ContentType {
+        unsafe { ContentType::from_raw(sys::hb_buffer_get_content_type(self.raw)) }
+    }
+
+    /// Get the currently set segment properties.
+    pub fn segment_properties(&self) -> SegmentProperties {
+        unsafe {
+            let mut props = SegmentProperties::uninit();
+            sys::hb_buffer_get_segment_properties(
+                self.raw,
+                &mut props as *mut sys::hb_segment_properties_t,
+            );
+            SegmentProperties::from_raw(props)
+        }
+    }
+
+    /// Get the currently set segment properties.
+    pub fn set_segment_properties(&mut self, props: SegmentProperties) {
+        unsafe {
+            sys::hb_buffer_set_segment_properties(
+                self.raw,
+                &props.as_raw() as *const sys::hb_segment_properties_t,
+            )
+        }
+    }
+
+    /// Get the glyphs and their positions
+    pub fn glyphs<'a>(&'a self) -> Option<Glyphs<'a>> {
+        if self.content_type() != ContentType::Glyphs {
+            return None;
+        }
+        unsafe {
+            let mut infos_len = 0;
+            let infos = sys::hb_buffer_get_glyph_infos(self.raw, &mut infos_len);
+            let mut positions_len = 0;
+            let positions = sys::hb_buffer_get_glyph_positions(self.raw, &mut positions_len);
+            assert_eq!(infos_len, positions_len);
+            Some(Glyphs {
+                infos: std::slice::from_raw_parts(infos, infos_len.try_into().unwrap()),
+                // repr(transparent) means we can transmute
+                positions: std::slice::from_raw_parts(
+                    positions as *const GlyphPosition,
+                    positions_len.try_into().unwrap(),
+                ),
+            })
+        }
+    }
 }
 
 impl std::fmt::Debug for Buffer {
@@ -322,5 +377,166 @@ impl Default for Buffer {
 impl Drop for Buffer {
     fn drop(&mut self) {
         unsafe { sys::hb_buffer_destroy(self.raw) }
+    }
+}
+
+/// The different states a `Buffer` might be in.
+///
+/// The contents of a `Buffer` have different meanings depending on the buffer state. When it is
+/// create it will be invalid, once text has been added it will be unicode, and then once a shaping
+/// run has happened it will be glyph.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ContentType {
+    /// The buffer has not yet been loaded with text.
+    Invalid,
+    /// The buffer contains text and is ready for shaping.
+    Unicode,
+    /// Shaping has run and the buffer contains glyph positions.
+    Glyphs,
+}
+
+impl ContentType {
+    /// Get `ContentType` from the respect `hb_buffer_content_type_t`.
+    #[inline]
+    pub fn from_raw(raw: sys::hb_buffer_content_type_t) -> Self {
+        match raw {
+            sys::HB_BUFFER_CONTENT_TYPE_INVALID => ContentType::Invalid,
+            sys::HB_BUFFER_CONTENT_TYPE_UNICODE => ContentType::Unicode,
+            sys::HB_BUFFER_CONTENT_TYPE_GLYPHS => ContentType::Glyphs,
+            _ => panic!("unexpected content type"),
+        }
+    }
+
+    /// Get `ContentType` from the respect `hb_buffer_content_type_t`.
+    #[inline]
+    pub fn into_raw(self) -> sys::hb_buffer_content_type_t {
+        match self {
+            ContentType::Invalid => sys::HB_BUFFER_CONTENT_TYPE_INVALID,
+            ContentType::Unicode => sys::HB_BUFFER_CONTENT_TYPE_UNICODE,
+            ContentType::Glyphs => sys::HB_BUFFER_CONTENT_TYPE_GLYPHS,
+        }
+    }
+}
+
+/// Properties for a shaping run (specifically language, script, and direction).
+///
+/// Can be used with `set_segment_properties` to avoid repetitive setting of individual properties.
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct SegmentProperties {
+    raw: sys::hb_segment_properties_t,
+}
+
+impl SegmentProperties {
+    fn uninit() -> sys::hb_segment_properties_t {
+        sys::hb_segment_properties_t {
+            direction: 0,
+            script: 0,
+            language: ptr::null_mut(),
+            reserved1: ptr::null_mut(),
+            reserved2: ptr::null_mut(),
+        }
+    }
+
+    /// Go from `sys::hb_segment_properties_t` to `SegmentProperites`.
+    fn from_raw(raw: sys::hb_segment_properties_t) -> Self {
+        SegmentProperties { raw }
+    }
+
+    /// Go from `SegmentProperites` to `sys::hb_segment_properties_t`.
+    fn as_raw(self) -> sys::hb_segment_properties_t {
+        self.raw
+    }
+
+    /// The direction set in this segment properties.
+    pub fn direction(&self) -> Direction {
+        self.raw.direction.into()
+    }
+
+    /// Sets the direction in this segment properties.
+    pub fn set_direction(&mut self, direction: Direction) {
+        self.raw.direction = direction.into();
+    }
+
+    /// The script set in this segment properties.
+    pub fn script(&self) -> Script {
+        Script::from_raw(self.raw.script)
+    }
+
+    /// Sets the script in this segment properties.
+    pub fn set_script(&mut self, script: Script) {
+        self.raw.script = script.as_raw();
+    }
+
+    /// The language set in this segment properties.
+    pub fn language(&self) -> Language {
+        unsafe { Language::from_raw(self.raw.language) }
+    }
+
+    /// Sets the language in this segment properties.
+    pub fn set_language(&mut self, language: Language) {
+        self.raw.language = language.as_raw();
+    }
+}
+
+pub struct Glyphs<'a> {
+    indexes: &'a [sys::hb_glyph_info_t],
+    positions: &'a [GlyphPositions],
+}
+
+impl<'a> Glyphs<'a> {
+    /// Get the underlying info object from which we get the glyph index.
+    pub fn infos(&self) -> &'a [sys::hb_glyph_info_t] {
+        self.infos
+    }
+
+    /// Get the positions to draw the glyphs.
+    pub fn positions(&self) -> &'a [GlyphPosition] {
+        self.positions
+    }
+
+    /// Iterate through the glyphs to draw.
+    pub fn iter(&self) -> impl Iterator<Item = Glyph> + 'a {
+        self.infos
+            .iter()
+            .zip(self.positions.iter())
+            .map(|(info, position)| Glyph {
+                index: info.codepoint,
+                position,
+            })
+    }
+}
+
+pub struct Glyph {
+    /// The index of the glyph in the font.
+    pub index: u32,
+    /// The position (offsets) to draw the glyph at, and the amount to move the cursor by after.
+    pub position: GlyphPosition,
+}
+
+#[repr(transparent)]
+pub struct GlyphPosition {
+    raw: sys::hb_glyph_position_t,
+}
+
+impl GlyphPosition {
+    /// The amount to move the cursor accross after drawing this glyph in horizontal shaping.
+    pub fn x_advance(&self) -> i32 {
+        self.raw.x_advance
+    }
+
+    /// The amount to move the cursor down/up after drawing this glyph in vertical shaping.
+    pub fn y_advance(&self) -> i32 {
+        self.raw.y_advance
+    }
+
+    /// The amount to offset from the cursor before starting to draw the glyph (in the x axis).
+    pub fn x_offset(&self) -> i32 {
+        self.raw.x_offset
+    }
+
+    /// The amount to offset from the cursor before starting to draw the glyph (in the y axis).
+    pub fn y_offset(&self) -> i32 {
+        self.raw.y_offset
     }
 }

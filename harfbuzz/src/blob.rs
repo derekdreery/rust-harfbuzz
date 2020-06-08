@@ -7,7 +7,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::sys;
+use crate::{sys, Borrowed, Owned, Ownership};
 use std::marker::PhantomData;
 use std::os::raw::{c_char, c_uint, c_void};
 use std::sync::Arc;
@@ -19,29 +19,6 @@ use std::{mem, ops, ptr, slice};
 //    `Deref<[u8]>`.
 //  - We don't implement `hb_blob_create_from_file` since `std` and the `mmap` crate handle file
 //    loading better.
-
-mod sealed {
-    pub trait Sealed {}
-}
-
-/// A sealed marker trait to denote ownership semantics.
-pub trait Ownership: sealed::Sealed {}
-
-impl sealed::Sealed for Owned {}
-impl Ownership for Owned {}
-impl<'a> sealed::Sealed for Borrowed<'a> {}
-impl<'a> Ownership for Borrowed<'a> {}
-
-/// A marker struct to denote that data in a `Blob` is borrowed with some lifetime.
-pub struct Borrowed<'a> {
-    phantom: PhantomData<&'a [u8]>,
-}
-
-/// A marker struct to denote that data in a `Blob` is owned by the blob.
-///
-/// HarfBuzz will have been given the info needed to destroy the rust object owning the data when
-/// the `Blob` is dropped.
-pub struct Owned;
 
 /// Blobs wrap a chunk of binary data to handle lifecycle management of data
 /// while it is passed between client and HarfBuzz.
@@ -64,7 +41,7 @@ impl Blob<Owned> {
     /// # use std::sync::Arc;
     /// # use harfbuzz::Blob;
     /// let data = vec![1; 256];
-    /// let blob = Blob::new_from_arc_vec(Arc::new(data));
+    /// let blob = Blob::from_arc(Arc::new(data));
     /// assert_eq!(blob.len(), 256);
     /// assert!(!blob.is_empty());
     /// ```

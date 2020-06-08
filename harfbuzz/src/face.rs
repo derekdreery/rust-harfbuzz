@@ -1,9 +1,8 @@
-use crate::{
-    blob::{Blob, Borrowed, Owned, Ownership},
-    font::Font,
-    sys,
-};
-use std::{marker::PhantomData, sync::Arc};
+//! The `Face` type and associated types/functions.
+//!
+//! A `Face` is a font face stored in a raw encoded format (currently always OpenType).
+use crate::{blob::Blob, decompose_tag, font::Font, sys, Borrowed, Owned, Ownership};
+use std::{convert::TryInto, iter, marker::PhantomData, sync::Arc};
 
 /// Wrapper around `hb_face_t`.
 ///
@@ -81,14 +80,43 @@ impl<T: Ownership> Face<T> {
     pub fn font(&self) -> Font<T> {
         Font::new(self)
     }
+
+    fn has_variation_data(&self) -> bool {
+        unsafe { sys::hb_ot_var_has_data(self.raw) != 0 }
+    }
+
+    /// Extract opentype variation data, if it is present.
+    pub fn variation_data(&self) -> Option<Vec<AxisInfo>> {
+        if !self.has_variation_data() {
+            return None;
+        }
+        unsafe {
+            let mut count = sys::hb_ot_var_get_axis_count(self.raw);
+            // We have to allocate the infos type, which will then by populated by harfbuzz.
+            let mut data: Vec<AxisInfo> = iter::repeat(Default::default())
+                .take(count.try_into().unwrap())
+                .collect();
+            sys::hb_ot_var_get_axis_infos(
+                self.raw,
+                0,
+                &mut count,
+                data.as_mut_ptr() as *mut sys::hb_ot_var_axis_info_t,
+            );
+            // If for some reason there were fewer axes than we expected, truncate.
+            let count: usize = count.try_into().unwrap();
+            if count < data.len() {
+                data.truncate(count)
+            }
+            Some(data)
+        }
+    }
 }
 
 impl<T: Ownership> Clone for Face<T> {
     fn clone(&self) -> Self {
         unsafe {
             sys::hb_face_make_immutable(self.raw);
-            sys::hb_face_reference(self.raw);
-            Face::from_raw(self.raw)
+            Face::from_raw(sys::hb_face_reference(self.raw))
         }
     }
 }
@@ -119,5 +147,72 @@ impl<'a> From<&'a [u8]> for Face<Borrowed<'a>> {
     fn from(data: &'a [u8]) -> Self {
         let blob = Blob::from(data);
         Face::from_blob(&blob)
+    }
+}
+
+/// This struct contains information on a particular axis of variation within a font.
+///
+/// Examples of variation axes include: weight (bold, light), slant, italic, width, ...
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+pub struct AxisInfo {
+    raw: sys::hb_ot_var_axis_info_t,
+}
+
+impl AxisInfo {
+    /// Get the index of the axis in the font.
+    ///
+    /// This is used when setting the variations for a font.
+    pub fn axis_index(&self) -> u32 {
+        self.raw.axis_index
+    }
+
+    /// Get the tag (a 4 byte identifier) for the variation axis.
+    #[inline]
+    pub fn tag(&self) -> [u8; 4] {
+        decompose_tag(self.raw.tag)
+    }
+
+    /// The smallest value for the axis that the font can use.
+    pub fn min_value(&self) -> f32 {
+        self.raw.min_value
+    }
+
+    /// The value that this axis will be set to when a font is created.
+    pub fn default_value(&self) -> f32 {
+        self.raw.default_value
+    }
+
+    /// The largest value for the axis that the font can use.
+    pub fn max_value(&self) -> f32 {
+        self.raw.max_value
+    }
+}
+
+/// The standard tag for the italic axis.
+pub const ITALIC_TAG: &[u8; 4] = b"ital";
+/// The standard tag for the optical size axis.
+pub const OPTICAL_SIZE_TAG: &[u8; 4] = b"opsz";
+/// The standard tag for the slant axis.
+pub const SLANT_TAG: &[u8; 4] = b"slnt";
+/// The standard tag for the width axis.
+pub const WIDTH_TAG: &[u8; 4] = b"wdth";
+/// The standard tag for the weight axis.
+pub const WEIGHT_TAG: &[u8; 4] = b"wght";
+
+impl Default for AxisInfo {
+    fn default() -> Self {
+        Self {
+            raw: sys::hb_ot_var_axis_info_t {
+                axis_index: 0,
+                tag: 0,
+                name_id: sys::HB_OT_NAME_ID_INVALID,
+                flags: 0,
+                min_value: 0.0,
+                default_value: 0.0,
+                max_value: 0.0,
+                reserved: 0,
+            },
+        }
     }
 }
