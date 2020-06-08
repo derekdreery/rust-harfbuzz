@@ -182,11 +182,11 @@ impl<T> Blob<T> {
     }
 
     /// Make this blob immutable.
-    ///
-    /// Because in HarfBuzz `Blob`s are reference counted, it might be that an owned blob is
-    /// immutable, for example if it has been cloned.
-    pub fn make_immutable(&mut self) {
+    pub fn make_immutable(&self) {
         unsafe {
+            // Even though this function mutates, it is safe because `Blob` is `!Send, Sync`
+            // (meaning this function is atomic) and the mutation happens in C so no mutable
+            // references are ever held.
             sys::hb_blob_make_immutable(self.raw);
         }
     }
@@ -214,6 +214,11 @@ impl<T> Blob<T> {
         let data: &[u8] = &**self;
         data.to_owned().into()
     }
+
+    /// Wrapper for `hb_blob_reference`.
+    unsafe fn reference(&self) -> *mut sys::hb_blob_t {
+        sys::hb_blob_reference(self.as_raw())
+    }
 }
 
 impl<T> Drop for Blob<T> {
@@ -228,8 +233,8 @@ impl<T> Drop for Blob<T> {
 impl<T: Clone> Clone for Blob<T> {
     fn clone(&self) -> Self {
         unsafe {
-            sys::hb_blob_reference(self.raw);
-            Blob::from_raw(self.raw)
+            self.make_immutable();
+            Blob::from_raw(self.reference())
         }
     }
 }
@@ -266,7 +271,7 @@ impl<T> ops::Deref for Blob<T> {
 }
 
 const DEREF_MUT_ERR: &str =
-    "hb_blob_get_data_writable failed, perhaps HarfBuzz has multiple references to the data";
+    "hb_blob_get_data_writable failed, possibly because the data is immutable";
 
 impl<'a> ops::DerefMut for Blob<BorrowedMut<'a>> {
     fn deref_mut(&mut self) -> &mut [u8] {

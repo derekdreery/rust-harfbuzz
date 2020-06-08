@@ -2,7 +2,7 @@ use crate::{
     blob::{Blob, Borrowed, Owned},
     sys,
 };
-use std::{marker::PhantomData, os::raw::c_uint, sync::Arc};
+use std::{marker::PhantomData, sync::Arc};
 
 /// Wrapper around `hb_face_t`.
 pub struct Face<T> {
@@ -36,23 +36,40 @@ impl<T> Face<T> {
         self.raw
     }
 
-    /// Creates the font face in HarfBuzz.
+    /// Creates a font face in HarfBuzz.
     ///
-    /// Wrapper for `hb_face_create`. The index defaults to 0.
-    pub fn from_blob(blob: Blob<T>) -> Face<T> {
-        Face::new_with_index(blob, 0)
+    /// The `Blob` should contain the raw font data, for example an opentype or truetype
+    /// specification. Since TrueType and OpenType collections may contain more than 1 font, and
+    /// this function defaults to the first font found in such cases, you will need to use
+    /// `Face::from_blob_index` to select a later font in the collection. This is rare, however,
+    /// as most font face definitions contain only 1 font.
+    #[inline]
+    pub fn from_blob(blob: &Blob<T>) -> Face<T> {
+        Face::from_blob_index(blob, 0)
     }
 
     /// Creates the font face in HarfBuzz.
     ///
-    /// Wrapper for `hb_face_create`.
-    fn new_with_index(blob: Blob<T>, index: c_uint) -> Face<T> {
+    /// Same as `from_blob` except it allows you to select a font other than the first in a
+    /// collection. Usually you will want `Face::from_blob` or one of the `From` implementations.
+    pub fn from_blob_index(blob: &Blob<T>, index: u32) -> Face<T> {
         unsafe {
+            // We assume c_uint is u32. It is better that the lib does not compile than it compiles
+            // will overflow problems coming from casting.
             let raw = sys::hb_face_create(blob.as_raw(), index);
-            // `hb_face_t` increments the reference count to the blob, so the original `Blob` is
-            // still valid.
+            // `hb_face_create` increments the reference count to the blob, so the original `Blob`
+            // is still valid and the reference count should be decremeneted when it goes out of
+            // scope - it shouldn't be `forget`ted (forgot).
             Face::from_raw(raw)
         }
+    }
+
+    /// Get the number of glyphs in the font face.
+    // hb_face_glyph_count returns a c_uint - which is at least 16 bits wide. I'm using 32 bits as
+    // a catchall.
+    pub fn glyph_count(&self) -> u32 {
+        // this won't compile if c_uint != u32.
+        unsafe { sys::hb_face_get_glyph_count(self.as_raw()) }
     }
 }
 
@@ -76,20 +93,20 @@ impl<T> Drop for Face<T> {
 impl From<Vec<u8>> for Face<Owned> {
     fn from(data: Vec<u8>) -> Self {
         let blob = Blob::from(data);
-        Face::from_blob(blob)
+        Face::from_blob(&blob)
     }
 }
 
 impl From<Arc<Vec<u8>>> for Face<Owned> {
     fn from(data: Arc<Vec<u8>>) -> Self {
         let blob = Blob::from(data);
-        Face::from_blob(blob)
+        Face::from_blob(&blob)
     }
 }
 
 impl<'a> From<&'a [u8]> for Face<Borrowed<'a>> {
     fn from(data: &'a [u8]) -> Self {
         let blob = Blob::from(data);
-        Face::from_blob(blob)
+        Face::from_blob(&blob)
     }
 }
